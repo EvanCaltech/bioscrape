@@ -93,6 +93,12 @@ cdef class ModelLikelihood(Likelihood):
     cdef double get_log_likelihood(self)
     cdef np.ndarray get_initial_state(self, int n)
     cdef dict get_initial_params(self, int n)
+    
+cdef class InterprelatorLikelihood(ModelLikelihood):
+    cdef BulkData bd
+    cdef unsigned norm_order
+    cdef double get_log_likelihood(self)
+    cdef double hmax
 
 cdef class DeterministicLikelihood(ModelLikelihood):
     cdef BulkData bd
@@ -137,6 +143,21 @@ cdef class Prior(Likelihood):
 ######################################              INFERENCE                         ################################
 #################################################                     ################################################
 
+cdef class InterprelatorInference:
+    cdef Model m
+    cdef np.ndarray params_to_estimate #indices of parameters to estimate
+    cdef np.ndarray global_init_state
+    cdef np.ndarray global_init_params
+
+    cdef Distribution prior
+
+    cdef unsigned num_walkers
+    cdef unsigned num_iterations
+    cdef unsigned dimension
+
+    cdef list likelihoods
+
+    cdef double sigma
 
 cdef class DeterministicInference:
     cdef Model m

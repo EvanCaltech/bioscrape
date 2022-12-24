@@ -1,4 +1,5 @@
-from bioscrape.inference import DeterministicLikelihood as DLL
+from bioscrape.inference import DeterministicLikelihood as DLL # this funciton will be my new likelihood
+from bioscrape.inference import InterprelatorLikelihood as ILL
 from bioscrape.inference import StochasticTrajectoriesLikelihood as STLL
 from bioscrape.inference import StochasticTrajectories
 from bioscrape.inference import BulkData
@@ -6,6 +7,12 @@ from bioscrape.simulator import py_simulate_model
 import matplotlib.pyplot as plt
 import warnings
 import numpy as np
+
+## Generate a new PIDINterface subclass copied from DeterministicInference, replace DLL function is core change, then generate new get log likelihood from prior + likelihood functions in this notebook
+# must run 
+# python setup.py install
+# in terminal to recompile before testing changes + restart notebook
+# I need to either input paramters instead of initial values or have a step that converts them into parameters if I want to sample off that
 
 class PIDInterface():
     '''
@@ -41,6 +48,7 @@ class PIDInterface():
         self.debug = kwargs.get('debug', False)
         return
     
+    ### This is a function I will edit, implementing sampled arrays should be reasonable
     def check_prior(self, params_dict):
         '''
         To add new prior functions: simply add a new function similar to ones that exist and then 
@@ -65,6 +73,10 @@ class PIDInterface():
                 lp += self.log_gaussian_prior(key, value)
             elif prior_type == 'beta':
                 lp += self.beta_prior(key, value)
+            elif prior_type == 'log10_isNorm':
+                lp += self.log10_isNorm_prior(key, value)
+            elif prior_type == 'neg_binom':
+                lp += self.neg_binom_prior(key, value)
             elif prior_type == 'custom':
                 # The last element in the prior dictionary must be a callable function
                 # The callable function shoud have the following signature :
@@ -109,6 +121,48 @@ class PIDInterface():
         prob = 1/(np.sqrt(2*np.pi) * sigma) * np.exp(-0.5*(param_value - mu)**2/sigma**2)
         if prob < 0:
             warnings.warn('Probability less than 0 while checking Gaussian prior! Current parameter name and value: {0}:{1}.'.format(param_name, param_value))
+            return np.inf
+        else:
+            return np.log(prob)
+        
+    def log10_isNorm_prior(self, param_name, param_value):
+        '''
+        Prior I use frequently where the log value is normally distributed
+        Check if given param_value is valid according to the prior distribution.
+        Returns the log prior probability or np.Inf if the param_value is invalid. 
+        '''
+        prior_dict = self.prior
+        if prior_dict is None:
+            raise ValueError('No prior found')
+        mu = prior_dict[param_name][1]
+        sigma = prior_dict[param_name][2]
+        if sigma < 0:
+            raise ValueError('The standard deviation must be positive.')
+        # Using probability density function for normal distribution
+        # Using scipy.stats.norm has overhead that affects speed up to 2x
+        ## The normal distribution is imposed on the log of the parameter value
+        ## Alternatively, I could establish the parameter as a log value and exponentiate it later
+        prob = 1/(np.sqrt(2*np.pi) * sigma) * np.exp(-0.5*(np.log10(param_value) - mu)**2/sigma**2)
+        if prob < 0:
+            warnings.warn('Probability less than 0 while checking log-is-normal prior! Current parameter name and value: {0}:{1}.'.format(param_name, param_value))
+            return np.inf
+        else:
+            return np.log(prob)
+        
+    def neg_binom_prior(self, param_name, param_value):
+        '''
+        Check if given param_value is valid according to the prior distribution.
+        Returns the log prior probability or np.inf if the param_value is invalid. 
+        '''
+        prior_dict = self.prior
+        if prior_dict is None:
+            raise ValueError('No prior found')
+        alpha = prior_dict[param_name][1]
+        beta = prior_dict[param_name][2]
+        from scipy.stats import nbinom
+        prob = nbinom.pmf(y, n=alpha, p=beta/(1+beta))
+        if prob < 0:
+            warnings.warn('Probability less than 0 while checking Exponential prior! Current parameter name and value: {0}:{1}.'.format(param_name, param_value))
             return np.inf
         else:
             return np.log(prob)
@@ -209,6 +263,88 @@ class PIDInterface():
             return np.inf
         else:
             return np.log(prob)
+
+class InterprelatorInference(PIDInterface):
+    def __init__(self, params_to_estimate, M, prior, **kwargs):
+        self.LL_det = None
+        self.dataDet = None
+        self.debug = None
+        if 'debug' in kwargs:
+            self.debug = kwargs.get('debug')
+        super().__init__(params_to_estimate, M, prior, **kwargs)
+        return
+
+    def setup_likelihood_function(self, data, timepoints, measurements,
+                                  initial_conditions, parameter_conditions, 
+                                  norm_order = 2, **kwargs):
+        
+        # finds the length of all datapoints
+        N = np.shape(data)[0]
+        
+        #Create a data Objects
+        # In this case the timepoints should be a list of timepoints vectors for each iteration
+        self.dataDet = BulkData(np.array(timepoints), data, measurements, N)
+        #If there are multiple initial conditions in a data-set, 
+        # should correspond to multiple initial conditions for inference.
+        #Note len(initial_conditions) must be equal to the number of trajectories N
+        # Similarly, if parameter_conditions are provided then the length must equal
+        # number of trajectories N
+        if self.debug:
+            print('The deterministic inference attributes:')
+            print('The timepoints shape is {0}'.format(np.shape(timepoints)))
+            print('The data shape is {0}'.format(np.shape(data)))
+            print('The measurmenets is {0}'.format(measurements))
+            print('The N is {0}'.format(N))
+            print('Using the initial conditions: {0}'.format(initial_conditions))
+            print('Using the parameter conditions: {0}'.format(parameter_conditions))
+        #Create Likelihood object
+        if parameter_conditions is not None:
+            self.LL_det = ILL(model = self.M, init_state = initial_conditions, 
+                              init_params = parameter_conditions, 
+                              data = self.dataDet, norm_order = norm_order, **kwargs)
+        else:
+            self.LL_det = ILL(model = self.M, init_state = initial_conditions, 
+                              data = self.dataDet, norm_order = norm_order, **kwargs)
+
+    # I don't think I actually need to edit this at all
+    def get_likelihood_function(self, params):
+        if self.LL_det is None:
+            raise RuntimeError("Must call InterprelatorInference.setup_likelihood_function before using InterprelatorInference.get_likelihood_function.")
+        #this part is the only part that is called repeatedly
+        params_dict = {}
+        for key, p in zip(self.params_to_estimate, params):
+            if self.log_space_parameters:
+                params_dict[key] = np.exp(p)
+            else:
+                params_dict[key] = p
+        
+        # Check prior
+        # Your prior function will return a float of log-prior
+        lp = 0
+        lp = self.check_prior(params_dict)
+        if not np.isfinite(lp):
+            return -np.inf
+        else:
+            # Reset to default
+            self.LL_det.set_init_params(self.default_parameters)
+            # Set new sampler parameter
+            self.LL_det.set_init_params(params_dict)
+            if self.debug:
+                print('current sample:', params_dict)
+            #apply cost function
+            LL_det_cost = self.LL_det.py_log_likelihood()
+            # if self.debug:
+            #     print('current cost:', LL_det_cost)
+            ln_prob = lp + LL_det_cost
+            if self.debug:
+                print('current cost total:', ln_prob)
+            #print("params", params, "ln_prob", ln_prob)
+            return ln_prob
+        
+
+########################################################################################################
+# ########## I have copied from below, but I am not using anything from the below function ##############
+# #######################################################################################################
 
 # Add a new class similar to this to create new interfaces.
 class StochasticInference(PIDInterface):
@@ -331,6 +467,7 @@ class DeterministicInference(PIDInterface):
                 params_dict[key] = p
         
         # Check prior
+        # Your prior function will return a float of log-prior
         lp = 0
         lp = self.check_prior(params_dict)
         if not np.isfinite(lp):

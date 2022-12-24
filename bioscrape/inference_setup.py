@@ -166,9 +166,9 @@ class InferenceSetup(object):
 
     def set_sim_type(self, sim_type: str):
         '''
-        Set the sim_type of simulations to run (deterministic or stochastic) when doing parameter inference
+        Set the sim_type of simulations to run (Interprelator, deterministic or stochastic) when doing parameter inference
         '''
-        self.sim_type = sim_type 
+        self.sim_type = sim_type
         return True 
 
     def set_method(self, method: str):
@@ -228,7 +228,8 @@ class InferenceSetup(object):
         '''
         Set the list of measurements (outputs) to look for in exp_data
         '''
-        self.measurements = measurements
+        if len(self.initial_conditions) != N:
+            self.measurements = measurements
         return True 
 
     def set_time_column(self, time_column: str):
@@ -287,6 +288,7 @@ class InferenceSetup(object):
         self.prepare_parameter_conditions()
         self.LL_data = self.extract_data()
 
+    # I don't have multiple initial conditions because I want all data considered together
     def prepare_initial_conditions(self, ):
         # Create initial conditions as required
         N = 1 if type(self.exp_data) is dict else len(self.exp_data)
@@ -400,7 +402,15 @@ class InferenceSetup(object):
         return data
 
     def setup_cost_function(self, **kwargs):
-        if self.sim_type == 'stochastic':
+        if self.sim_type == 'Interprelator':
+            print('I am about to set my pid_interface')
+            self.pid_interface = InterprelatorInference(self.params_to_estimate, self.M, self.prior, **kwargs)
+            self.pid_interface.setup_likelihood_function(self.LL_data, self.timepoints, self.measurements, 
+                                                         initial_conditions=self.initial_conditions,
+                                                         parameter_conditions=self.parameter_conditions,
+                                                         norm_order=self.norm_order, **kwargs)
+
+        elif self.sim_type == 'stochastic':
             self.pid_interface = StochasticInference(self.params_to_estimate, self.M, self.prior, **kwargs)
             self.pid_interface.setup_likelihood_function(self.LL_data, self.timepoints, self.measurements, 
                                                          initial_conditions=self.initial_conditions, 
@@ -490,6 +500,7 @@ class InferenceSetup(object):
         return p0
 
     def run_emcee(self, **kwargs):
+        # Function that calls emcee
         if kwargs.get("reuse_likelihood", False) is False: 
             self.setup_cost_function(**kwargs)
 
@@ -520,7 +531,8 @@ class InferenceSetup(object):
         
         pool = kwargs.get('pool', None)
         if printout: print("creating an ensemble sampler with multiprocessing pool=", pool)
-
+        
+        ### focus on the editing the cost function
         sampler = emcee.EnsembleSampler(self.nwalkers, ndim, self.cost_function, pool = pool)
         sampler.run_mcmc(p0, self.nsteps, progress=progress,
                          skip_initial_state_check=skip_initial_state_check)

@@ -299,8 +299,8 @@ cdef class ModelLikelihood(Likelihood):
 
     def set_init_params(self, dict pd):
 
-        # print("before set", self.m.get_parameter_dictionary())
-        # print("asking to be set to", pd)
+        print("before set", self.m.get_parameter_dictionary())
+        print("asking to be set to", pd)
         self.m.set_params(pd)
         self.csim.py_set_param_values(self.m.get_params_values())
         # print("After set", self.m.get_parameter_dictionary())
@@ -331,7 +331,117 @@ cdef class ModelLikelihood(Likelihood):
 
     def set_data(self, **keywords):
         raise NotImplementedError("set_data must be implemented in subclasses of ModelLikelihood")
+        
+cdef class InterprelatorLikelihood(ModelLikelihood):
+    def set_model(self, Model m, RegularSimulator prop = None, CSimInterface csim = None):
+        if prop is None:
+            prop = DeterministicSimulator()
+        ModelLikelihood.set_model(self, m, prop, csim)
+        self.csim.py_prep_deterministic_simulation()
 
+        #self.m = m
+        #if csim is None:
+        #    csim = ModelCSimInterface(m)
+        
+        #self.csim = csim
+        
+        #self.propagator = prop
+
+
+    def set_data(self, BulkData bd):
+        #Set bulk data
+        self.bd = bd
+        self.N = self.bd.get_N() #Number of samples
+        self.propagator.py_set_hmax(self.bd.get_minimum_dt()) 
+
+        #Get species indices in Model
+        species_list = bd.get_measured_species()
+        self.M = len(species_list) #Number of measured species
+        self.meas_indices = np.zeros(len(species_list), dtype=int)
+        for i in range(self.M):
+            self.meas_indices[i] = self.m.get_species_index(species_list[i])
+        
+
+        if not ((self.N == 1 or self.Nx0 == 1) or (self.Nx0 == self.N)):
+            print("self.N", self.N, "self.Nx0", self.Nx0)
+            raise ValueError("Either the number of samples and the number of"
+                             "initial conditions match or one of them must be 1")
+
+    def py_get_data(self):
+        return self.bd
+
+    def set_likelihood_options(self, norm_order = 1, **keywords):
+        self.norm_order = norm_order
+
+    def py_get_norm_order(self):
+        return self.norm_order
+
+    def py_set_hmax(self, hmax):
+        self.hmax = hmax
+        self.propagator.py_set_hmax(hmax)
+
+    
+# this is the main function to edit for the DLL import in the other file
+    cdef double get_log_likelihood(self):
+        # Write in the specific parameters and species values.
+        cdef np.ndarray[np.double_t, ndim = 1] species_vals = self.m.get_species_values()
+        cdef np.ndarray[np.double_t, ndim = 1] param_vals = self.m.get_params_values()
+        cdef np.ndarray[np.double_t, ndim = 2] ans
+        cdef np.ndarray[np.double_t, ndim = 1] timepoints
+        cdef unsigned i, t
+        cdef double error = 0.0
+        cdef double dif = 0
+        cdef np.ndarray[np.double_t, ndim = 3] measurements = self.bd.get_measurements()
+        #cdef SSAResult res
+        
+        # I am going to use this direct set because I don't want it to sim through them without me needing to input
+        timepoints = np.arange(0, 2000, 25.0)
+        print("I have made it this far")
+
+        #Go through trajectories (which may have unique initial states)
+        for n in range(self.N):
+            #Set Timepoints
+            
+            # if self.bd.has_multiple_timepoints():
+            #     timepoints = self.bd.get_timepoints()[n, :]
+            # else:
+            #     timepoints = self.bd.get_timepoints()
+
+            #Reset csim interface - SOLVES ISSUES WITH RULES
+            #self.csim = ModelCSimInterface(self.m)
+            #self.csim.py_prep_deterministic_simulation()
+
+            self.csim.set_initial_state(self.get_initial_state(n))
+            # print('current params conditions', self.csim.py_get_param_values())
+            # print('lets set for new traj to', self.get_initial_params(n))
+            if self.get_initial_params(n) is not None:
+                self.set_init_params(self.get_initial_params(n))
+            # this simulate call replaces the higher level bioscrape call in my function
+            ans = self.propagator.simulate(self.csim, timepoints).get_result()
+
+            #print("simulation", t12-t11)
+            # Compare the data using norm and return the likelihood.
+            #Cycle through all the measurements of each trajectory
+            for i in range(self.M):
+                for t in range(len(timepoints)):
+                    dif = measurements[n, t, i] - ans[t,self.meas_indices[i]]
+                    if dif < 0:
+                        dif = -dif
+                    error += dif**self.norm_order
+
+        error = error**(1./self.norm_order)
+        print(f"this is the measurement {measurements}")
+
+        if np.isnan(error):
+            return -np.inf
+        else:
+            return -error
+        
+########################################################################################################
+########### I have copied from below, but I am not using anything from the below function ##############
+########################################################################################################
+
+        # this is the class I am copying and creating my version of and add to the pxd file make sure it's named to compile etc.
 cdef class DeterministicLikelihood(ModelLikelihood):
     def set_model(self, Model m, RegularSimulator prop = None, CSimInterface csim = None):
         if prop is None:
@@ -381,7 +491,7 @@ cdef class DeterministicLikelihood(ModelLikelihood):
         self.propagator.py_set_hmax(hmax)
 
     
-
+# this is the main function to edit for the DLL import in the other file
     cdef double get_log_likelihood(self):
         # Write in the specific parameters and species values.
         cdef np.ndarray[np.double_t, ndim = 1] species_vals = self.m.get_species_values()
@@ -411,6 +521,7 @@ cdef class DeterministicLikelihood(ModelLikelihood):
             # print('lets set for new traj to', self.get_initial_params(n))
             if self.get_initial_params(n) is not None:
                 self.set_init_params(self.get_initial_params(n))
+            # this simulate call replaces the higher level bioscrape call in my function
             ans = self.propagator.simulate(self.csim, timepoints).get_result()
 
             #print("simulation", t12-t11)
@@ -579,6 +690,8 @@ def py_inference(Model = None, params_to_estimate = None, exp_data = None, initi
                  parameter_conditions = None, measurements = None, time_column = None, nwalkers = None, 
                  nsteps = None, init_seed = None, prior = None, sim_type = None, inference_type = 'emcee',
                  method = 'mcmc', plot_show = True, **kwargs):
+    
+    print('I can print something here')
     
     if Model is None:
         raise ValueError('Model object cannot be None.')
