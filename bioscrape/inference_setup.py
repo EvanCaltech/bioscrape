@@ -287,9 +287,11 @@ class InferenceSetup(object):
         self.prepare_initial_conditions()
         self.prepare_parameter_conditions()
         self.LL_data = self.extract_data()
+        # Extract other data
+        self.other_data = self.extract_other_data(**kwargs)
 
     # I don't have multiple initial conditions because I want all data considered together
-    def prepare_initial_conditions(self, ):
+    def prepare_initial_conditions(self):
         # Create initial conditions as required
         N = 1 if type(self.exp_data) is dict else len(self.exp_data)
         if type(self.initial_conditions) is dict:
@@ -401,8 +403,35 @@ class InferenceSetup(object):
                             'be a list of Pandas DataFrames or a single Pandas DataFrame. ')
         return data
 
+    def extract_other_data(self, **kwargs):
+        """
+        Extract other data from dataframe, specified as list of columns in 
+        the argument "other_columns".
+        Returns the numpy array of the data extracted from the dataframe(s)
+        or None, if no such argument is passed.
+        """
+        other_columns = kwargs.get('other_columns')
+        if other_columns:
+            if not isinstance(other_columns, list) and not isinstance(other_columns, str):
+                raise ValueError('The argument `other_columns must be a list of strings or a string')
+            elif isinstance(other_columns, str):
+                other_columns = [other_columns]
+            if isinstance(self.exp_data, list):
+                other_data = []
+                for df in self.exp_data:
+                    other_data.append(np.array(df[other_columns].values))
+                other_data = np.array(other_data)
+            elif isinstance(self.exp_data, pd.Dataframe):
+                df = self.exp_data
+                other_data = np.array(df[other_columns].values)
+        else:
+            other_data = None
+        return other_data
+
+
     def setup_cost_function(self, **kwargs):
         if self.sim_type == 'Interprelator':
+            # You can use self.other_data array here.
             print('I am about to set my pid_interface')
             self.pid_interface = InterprelatorInference(self.params_to_estimate, self.M, self.prior, **kwargs)
             self.pid_interface.setup_likelihood_function(self.LL_data, self.timepoints, self.measurements, 
