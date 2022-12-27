@@ -685,7 +685,9 @@ cdef class StochasticStatesLikelihood(ModelLikelihood):
         for i in range(len(the_list)):
             self.meas_indices[i] = self.m.get_species_index(the_list[i])
 
-
+# Need py_inference to take a dataframe and save a n x m array (conditions x species) 
+# The input `other_columns` will handle this, consisting of list of strings of length m
+# that correspond to column names in the dataframe
 def py_inference(Model = None, params_to_estimate = None, exp_data = None, initial_conditions = None,
                  parameter_conditions = None, measurements = None, time_column = None, nwalkers = None, 
                  nsteps = None, init_seed = None, prior = None, sim_type = None, inference_type = 'emcee',
