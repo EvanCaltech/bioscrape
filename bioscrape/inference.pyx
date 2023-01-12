@@ -13,6 +13,127 @@ import sys
 
 import emcee
 
+### Things I used in my python module calcs:
+import math
+import itertools
+import scipy.stats as st
+
+## my class functions
+class ModuleSet:
+    
+    """
+    This class holds the information of the set of modules that make up an interprelator response cassette
+    to keep references consistent and clean up array indexing.
+    In all references, p is the live parameter dictionary over the course of parameter optimization
+    If there is a value that must be recalculated as the parameter dicitonary changes, give it its own function since we won't be reinitializing the wholec lass each iteration.
+    """
+    
+    def __init__(self, name, binders, positions, effectors):
+        
+        self.name = name
+        self.binding_site = binders
+        self.positions = positions
+        self.effectors = effectors
+        self.eta = np.array([len(position_set) for position_set in self.positions])
+        self.shifted_effectors = None
+        self.xi = None
+        self.cognate_rho = np.array([f'{self.binding_site[j]}scaf{self.effectors[j]}' for j,n in enumerate(self.eta)])
+        self.state_TFs = np.array([list(rho_complex.replace(effector, "")) for i, (rho_complex, effector) in enumerate(zip(self.binding_site, self.effectors))])
+        self.individual_binders = [[*state, effector] for state, effector in zip(self.state_TFs, self.effectors)]
+        # self.cognateKd  = 
+        
+    def numMods(self):
+        
+        assert len(self.binding_site)==len(self.positions)==len(self.effectors), "length of binder, position, and effector must all match"
+        
+        return len(self.binding_site)
+    
+    def calculate_decayed_beta(self, p):
+        """
+        Calculate the expected effector value given positional decay
+        p = the parameter dicitonary outputted by the parameter estimation
+        """
+        
+        self.shifted_effectors = np.array([1+(p[f"Beta{Zj}"]-1)*np.exp(-(position-p[f"x0{Zj}"])/p[f"Tau{Zj}"]) for j, (position,Zj) in enumerate(zip(self.positions, self.effectors))], dtype='object')
+
+        return self.shifted_effectors
+    
+    def calculate_xi(self, p=None):
+        """
+        Takes in the decayed beta values at each position and outputs the combined effector value for each binding site with m bound factors
+        This results in eta+1 shaped array where position [j, m] tells you the effector shift of submodule j with m bound effectors.
+        """
+        if self.shifted_effectors is None:
+            assert p is not None, "xi requires decayed beta to be set, either run that function first or input your parameter dicitonary as a variable here"
+            self.calculate_decayed_beta(self, p)
+        
+        self.xi = np.array([np.array([np.mean(np.prod(
+                            np.array(list(itertools.combinations(self.shifted_effectors[j], r=m))), axis=1))
+                                       for m in range(n+1)])
+                                       for j, n in enumerate(self.eta)], dtype='object')
+        
+    def calculate_cognate_Kd(self, p, complex_interaction=False):
+        """
+        Uses the individual Koff and Kon values from the parameter dictionary to find a Kd, which is assumed to have
+            - The product of Koff (they must all detach to fully detach)
+            - The sum of their OFF target affinities, meaning the effective Kon is divided by the number of unique possible off-target bindings that could occur
+        Optionally, include a parameter for inefficiency conferred by the scaffold attaching the ZF rather than a direct fusion. This is assumed to be scaffold size dependent and does not change with ZF.
+        """
+        
+        if complex_interaction:
+            
+            self.cognate_Kd = np.array(p['complex_interaction']*[np.prod(np.array([p[f'Koff{tf}'] for tf in tfs]))/(p['KonZF']/len(tfs)) for tfs in self.individual_binders])
+            
+        else:
+        
+            self.cognate_Kd = np.array([np.prod(np.array([p[f'Koff{tf}'] for tf in tfs]))/(p['KonZF']/len(tfs)) for tfs in self.individual_binders])
+        
+        return self.cognate_Kd
+    
+    def calculate_transcription(self, p, SSdfRho, fluorescent_output=True):
+        ### If I want a logged likelihood,  I should log it in cost function generation here
+        """
+        Takes the parameter dictionary and the steady state rho
+        """
+        assert self.xi is not None, "run other module calculations before identifying transcripational output"
+        
+        A = SSdfRho[self.cognate_rho].values
+        Kd = self.cognate_Kd
+
+        # these factorials could be removed to access the binomial coefficient in other ways if desired eg scipy.special.binom
+        numerator = p['Pol']*np.prod(np.array([np.sum(np.array(
+            [math.factorial(n)/(math.factorial(m)*math.factorial(n-m)) * self.xi[j][m] * (A[j]/Kd[j])**m
+             for m in range(n+1)]), axis=0)
+             for j,n in enumerate(self.eta)]), axis=0)
+
+        denominator = np.prod(np.array([(1 + A[j]/Kd[j])**n for j,n in enumerate(self.eta)]), axis=0) + numerator
+        
+        if fluorescent_output:
+                  
+            # ThetaI optionally converts to FP signal, though preferably this would be allowed to vary between reporter colors.
+            self.predicted_transcription = p['ThetaI']*p['rMax']*numerator/denominator
+        
+            return self.predicted_transcription
+        
+        else:
+            
+            self.predicted_transcription = p['rMax']*numerator/denominator
+            
+            return self.predicted_transcription
+        
+    def calculate_log_likelihood(self, data, p):
+        """
+        returns the log likelihood, either the negative absolute value of the difference between the data and the predicted value,
+        or the log of the probability of the data given the distribution of the model.
+        These will be summed in the final calculation of log likelihood
+        """
+
+        # where mu is the predicted transcription and sigma describes the parameter from the sampler
+        #lognorm        
+        self.loglike = np.log(st.norm.pdf(x=np.log(data), loc=np.log(self.predicted_transcription), scale=p['logSigmaI']))
+        
+        return self.loglike
+
 ##################################################                ####################################################
 ######################################              DISTRIBUTION                      ################################
 #################################################                     ################################################
@@ -299,8 +420,8 @@ cdef class ModelLikelihood(Likelihood):
 
     def set_init_params(self, dict pd):
 
-        print("before set", self.m.get_parameter_dictionary())
-        print("asking to be set to", pd)
+        # print("before set", self.m.get_parameter_dictionary())
+        # print("asking to be set to", pd)
         self.m.set_params(pd)
         self.csim.py_set_param_values(self.m.get_params_values())
         # print("After set", self.m.get_parameter_dictionary())
@@ -331,6 +452,12 @@ cdef class ModelLikelihood(Likelihood):
 
     def set_data(self, **keywords):
         raise NotImplementedError("set_data must be implemented in subclasses of ModelLikelihood")
+
+## A necessary variable I will figure out how to make an input later       
+module_set_initialization_dictionary = dict([
+    ['AY-BX_168', [np.array(['AY1', 'BX1']), np.array([np.array([126, 173]), np.array([234, 281, 328, 375])], dtype='object'), np.array(['Y1', 'X1'])]],
+    ['AX-BY_170', [np.array(['AX1', 'BY1']), np.array([np.array([234, 281, 328, 375]), np.array([126, 173])], dtype='object'), np.array(['X1', 'Y1'])]],
+])
         
 cdef class InterprelatorLikelihood(ModelLikelihood):
     def set_model(self, Model m, RegularSimulator prop = None, CSimInterface csim = None):
@@ -379,7 +506,6 @@ cdef class InterprelatorLikelihood(ModelLikelihood):
     def py_set_hmax(self, hmax):
         self.hmax = hmax
         self.propagator.py_set_hmax(hmax)
-
     
 # this is the main function to edit for the DLL import in the other file
     cdef double get_log_likelihood(self):
@@ -392,15 +518,18 @@ cdef class InterprelatorLikelihood(ModelLikelihood):
         cdef double error = 0.0
         cdef double dif = 0
         cdef np.ndarray[np.double_t, ndim = 3] measurements = self.bd.get_measurements()
+        other_data = self.other_data() # I feel like I haven't properly instantiated this anywhere.
         #cdef SSAResult res
+        
+        
         
         # I am going to use this direct set because I don't want it to sim through them without me needing to input
         timepoints = np.arange(0, 2000, 25.0)
-        print("I have made it this far")
+        # print("I have made it this far")
 
         #Go through trajectories (which may have unique initial states)
         for n in range(self.N):
-            #Set Timepoints
+            # Set Timepoints
             
             # if self.bd.has_multiple_timepoints():
             #     timepoints = self.bd.get_timepoints()[n, :]
@@ -414,14 +543,18 @@ cdef class InterprelatorLikelihood(ModelLikelihood):
             self.csim.set_initial_state(self.get_initial_state(n))
             # print('current params conditions', self.csim.py_get_param_values())
             # print('lets set for new traj to', self.get_initial_params(n))
+
             if self.get_initial_params(n) is not None:
                 self.set_init_params(self.get_initial_params(n))
-            # this simulate call replaces the higher level bioscrape call in my function
-            ans = self.propagator.simulate(self.csim, timepoints).get_result()
+
+            # I beleive this is a dataframe so I should be able to iloc slice it like this
+            ssRho = self.propagator.simulate(self.csim, timepoints).get_result().iloc[-1, 0:-1]
+            ans = self.propagator.simulate(self.csim, timepoints).get_result() # I leave this here so it can compile, though I don't intend to use it in this form
 
             #print("simulation", t12-t11)
             # Compare the data using norm and return the likelihood.
             #Cycle through all the measurements of each trajectory
+            
             for i in range(self.M):
                 for t in range(len(timepoints)):
                     dif = measurements[n, t, i] - ans[t,self.meas_indices[i]]
@@ -430,7 +563,8 @@ cdef class InterprelatorLikelihood(ModelLikelihood):
                     error += dif**self.norm_order
 
         error = error**(1./self.norm_order)
-        print(f"this is the measurement {measurements}")
+        # print(measurements) Neither of these print, probably because it's within the loops
+        # print(f"this is the measurement {measurements}")
 
         if np.isnan(error):
             return -np.inf
@@ -691,9 +825,10 @@ cdef class StochasticStatesLikelihood(ModelLikelihood):
 def py_inference(Model = None, params_to_estimate = None, exp_data = None, initial_conditions = None,
                  parameter_conditions = None, measurements = None, time_column = None, nwalkers = None, 
                  nsteps = None, init_seed = None, prior = None, sim_type = None, inference_type = 'emcee',
-                 method = 'mcmc', plot_show = True, **kwargs):
+                 method = 'mcmc', plot_show = True, other_columns=None, **kwargs):
     
-    print('I can print something here')
+    # print('I can print something here')
+    print('I can print a different thing here')
     
     if Model is None:
         raise ValueError('Model object cannot be None.')
@@ -717,6 +852,10 @@ def py_inference(Model = None, params_to_estimate = None, exp_data = None, initi
         pid.set_nsteps(nsteps)
     if sim_type is not None:
         pid.set_sim_type(sim_type)
+    if other_columns is not None:
+        pid.set_other_columns(other_columns)
+        
+    print(pid.sim_type)
     if params_to_estimate is not None:
         pid.set_params_to_estimate(params_to_estimate)
     if prior is not None:

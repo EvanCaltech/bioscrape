@@ -30,6 +30,7 @@ class InferenceSetup(object):
         self.timepoints = kwargs.get('timepoints', None)
         self.time_column = kwargs.get('time_column', 'time')
         self.measurements = kwargs.get('measurements', [''])
+        self.other_columns = kwargs.get('other_columns', ['']) #duplicated off measurements
         self.initial_conditions = kwargs.get('initial_conditions', None)
         self.parameter_conditions = kwargs.get('parameter_conditions', None)
         self.norm_order = kwargs.get('norm_order', 2)
@@ -60,6 +61,7 @@ class InferenceSetup(object):
             self.timepoints,
             self.time_column,
             self.measurements,
+            self.other_columns,
             self.initial_conditions,
             self.parameter_conditions,
             self.norm_order,
@@ -95,6 +97,7 @@ class InferenceSetup(object):
         self.cost_progress = state[19]
         self.cost_params = state[20]
         self.hmax = state[21]
+        self.other_columns = state[22]
         if self.exp_data is not None:
             self.prepare_inference()
             self.setup_cost_function()
@@ -228,8 +231,9 @@ class InferenceSetup(object):
         '''
         Set the list of measurements (outputs) to look for in exp_data
         '''
-        if len(self.initial_conditions) != N:
-            self.measurements = measurements
+        # if len(self.initial_conditions) != N: not sure where this line came from
+        self.measurements = measurements
+        
         return True 
 
     def set_time_column(self, time_column: str):
@@ -247,6 +251,15 @@ class InferenceSetup(object):
             self.exp_data = exp_data
         else:
             raise ValueError('exp_data must be either a Pandas dataframe or a list of dataframes.')
+        return True
+# duplicated from set_measurements
+    def set_other_columns(self, other_columns: list):
+        '''
+        Set the list of other useful inputs to look for in exp_data
+        '''
+        # if len(self.initial_conditions) != N: not sure where this line came from
+        self.other_columns = other_columns
+        
         return True 
 
     def set_norm_order(self, norm_order: int):
@@ -287,6 +300,7 @@ class InferenceSetup(object):
         self.prepare_initial_conditions()
         self.prepare_parameter_conditions()
         self.LL_data = self.extract_data()
+        self.other_data = self.extract_other_data()
         # Extract other data
         self.other_data = self.extract_other_data(**kwargs)
 
@@ -430,11 +444,12 @@ class InferenceSetup(object):
 
 
     def setup_cost_function(self, **kwargs):
+        print(self.sim_type)
         if self.sim_type == 'Interprelator':
             # You can use self.other_data array here.
             print('I am about to set my pid_interface')
             self.pid_interface = InterprelatorInference(self.params_to_estimate, self.M, self.prior, **kwargs)
-            self.pid_interface.setup_likelihood_function(self.LL_data, self.timepoints, self.measurements, 
+            self.pid_interface.setup_likelihood_function(self.LL_data, self.timepoints, self.measurements, self.other_data, self.other_columns
                                                          initial_conditions=self.initial_conditions,
                                                          parameter_conditions=self.parameter_conditions,
                                                          norm_order=self.norm_order, **kwargs)
@@ -447,6 +462,7 @@ class InferenceSetup(object):
                                                          norm_order = self.norm_order,
                                                          N_simulations = self.N_simulations, **kwargs)
         elif self.sim_type == 'deterministic':
+            print('I am still using deterministic inference for some reason')
             self.pid_interface = DeterministicInference(self.params_to_estimate, self.M, self.prior, **kwargs)
             self.pid_interface.setup_likelihood_function(self.LL_data, self.timepoints, self.measurements, 
                                                          initial_conditions=self.initial_conditions,

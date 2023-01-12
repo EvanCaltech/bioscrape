@@ -160,7 +160,7 @@ class PIDInterface():
         alpha = prior_dict[param_name][1]
         beta = prior_dict[param_name][2]
         from scipy.stats import nbinom
-        prob = nbinom.pmf(y, n=alpha, p=beta/(1+beta))
+        prob = nbinom.pmf(param_value, n=alpha, p=beta/(1+beta))
         if prob < 0:
             warnings.warn('Probability less than 0 while checking Exponential prior! Current parameter name and value: {0}:{1}.'.format(param_name, param_value))
             return np.inf
@@ -268,13 +268,14 @@ class InterprelatorInference(PIDInterface):
     def __init__(self, params_to_estimate, M, prior, **kwargs):
         self.LL_det = None
         self.dataDet = None
+        self.dataOther = None
         self.debug = None
         if 'debug' in kwargs:
             self.debug = kwargs.get('debug')
         super().__init__(params_to_estimate, M, prior, **kwargs)
         return
 
-    def setup_likelihood_function(self, data, timepoints, measurements,
+    def setup_likelihood_function(self, data, timepoints, measurements, other_data, other_columns
                                   initial_conditions, parameter_conditions, 
                                   norm_order = 2, **kwargs):
         
@@ -283,7 +284,9 @@ class InterprelatorInference(PIDInterface):
         
         #Create a data Objects
         # In this case the timepoints should be a list of timepoints vectors for each iteration
-        self.dataDet = BulkData(np.array(timepoints), data, measurements, N)
+        # self.dataDet = BulkData(np.array(timepoints), data, measurements, N)
+        self.dataDet = FlowData(data, measurements, N)
+        self.dataOther = other_data
         #If there are multiple initial conditions in a data-set, 
         # should correspond to multiple initial conditions for inference.
         #Note len(initial_conditions) must be equal to the number of trajectories N
@@ -301,10 +304,10 @@ class InterprelatorInference(PIDInterface):
         if parameter_conditions is not None:
             self.LL_det = ILL(model = self.M, init_state = initial_conditions, 
                               init_params = parameter_conditions, 
-                              data = self.dataDet, norm_order = norm_order, **kwargs)
+                              data = self.dataDet,  other_data = self.dataOther, norm_order = norm_order, **kwargs)
         else:
             self.LL_det = ILL(model = self.M, init_state = initial_conditions, 
-                              data = self.dataDet, norm_order = norm_order, **kwargs)
+                              data = self.dataDet, other_data = self.dataOther, norm_order = norm_order, **kwargs)
 
     # I don't think I actually need to edit this at all
     def get_likelihood_function(self, params):
